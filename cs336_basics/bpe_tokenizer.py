@@ -1,6 +1,10 @@
 import os
+import re
 from typing import BinaryIO
 from collections import Counter
+
+import regex
+
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -49,8 +53,34 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 class BPETokenizer:
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
     def __init__(self):
         self.merges = []
+        self.vocab = {}
+
+    def pretokenize_chunk(self, chunk: str, special_tokens: list[str]) -> Counter:
+
+        counter = Counter()
+
+        if special_tokens:
+            special_pattern = "|".join(re.escape(token) for token in special_tokens)
+            parts = re.split(special_pattern, chunk)
+        else:
+            parts = [chunk]
+
+        for part in parts:
+            for match in regex.finditer(self.PAT, part):
+                token = match.group(0)
+
+                token_bytes = token.encode("utf-8")
+                token_tuple = tuple(bytes([b]) for b in token_bytes)
+
+                if token_tuple:
+                    counter[token_tuple] += 1
+
+        return counter
+
 
     def get_pair_counts(self, freq_key_b):
         count_dict = {}
@@ -76,7 +106,19 @@ class BPETokenizer:
 
         return tuple(new_tokens)
 
-    def train(self, input_path: str, vocab_size: int, special_tokens: list[str], num_merges=None):
+    def merge_all(self, freq_key_b: Counter, best_pair: tuple[bytes, bytes]) -> Counter:
+
+        new_freq_key_b = Counter()
+
+        for tokens, freq in freq_key_b.items():
+
+            new_tokens = self.merge_token(tokens, best_pair)
+
+            new_freq_key_b[new_tokens] += freq
+
+        return new_freq_key_b
+
+    def train(self, input_path: str | os.PathLike, vocab_size: int, special_tokens: list[str], num_processes: int = 4):
         '''
             input_path: str Path to a text file with BPE tokenizer training data.
 
@@ -86,26 +128,70 @@ class BPETokenizer:
                 them as hard boundaries that prevent merges across their spans, but do not include them when computing merge statistics.
         '''
 
-        # Read files
-        with open(input_path, "rb") as f:
-            num_processes = 4
-            boundaries = find_chunk_boundaries(f, num_processes, special_tokens[0].encode("utf-8"))
+        # 1. Build initial vocab: 256 byte tokens
 
-            # The following is a serial implementation, but you can parallelize this
-            # by sending each start/end pair to a set of processes.
+        vocab = {i: bytes([i]) for i in range(256)}
+
+        next_id = 256
+
+        # 2. Add special tokens to vocab
+
+        for tok in special_tokens:
+            vocab[next_id] = tok.encode("utf-8")
+
+            next_id += 1
+
+        # 3. Decide how many merges to do
+        num_merges = vocab_size - len(vocab)
+
+        if num_merges < 0:
+            raise ValueError(
+
+                f"vocab_size={vocab_size} is too small. "
+
+                f"Need at least 256 + len(special_tokens) = {len(vocab)}."
+
+            )
+
+        # 4. Read chunks and collect global pre-token frequencies
+
+        global_freq_key_b = Counter()
+
+        with open(input_path, "rb") as f:
+
+            if special_tokens:
+
+                split_token = special_tokens[0].encode("utf-8")
+
+                boundaries = find_chunk_boundaries(f, num_processes, split_token)
+
+            else:
+
+                f.seek(0, os.SEEK_END)
+
+                file_size = f.tell()
+
+                boundaries = [0, file_size]
+
             for start, end in zip(boundaries[:-1], boundaries[1:]):
                 f.seek(start)
-                chunk = f.read(end - start).decode("utf-8", errors="ignore")
 
-        return
-        tokens = text.split(" ")
-        freq = dict(Counter(tokens))
+                chunk_bytes = f.read(end - start)
 
-        freq_key_b = {tuple(k): v for k, v in freq.items()}
+                chunk = chunk_bytes.decode("utf-8", errors="ignore")
 
-        self.merges = []
+                local_counter = self.pretokenize_chunk(chunk, special_tokens)
 
-        while True:
+                global_freq_key_b.update(local_counter)
+
+        # 5. Train BPE merges globally, not per chunk
+
+        merges = []
+
+        freq_key_b = global_freq_key_b
+
+        for _ in range(num_merges):
+
             count_dict = self.get_pair_counts(freq_key_b)
 
             if not count_dict:
@@ -113,31 +199,35 @@ class BPETokenizer:
 
             max_val = max(count_dict.values())
 
-            if max_val <= 1:
-                break
+            # 找所有并列最大 pair
 
             max_pairs = [
+
                 pair for pair, count in count_dict.items()
+
                 if count == max_val
+
             ]
 
-            # 并列时选择字典序更大的 pair
+            # tie-break: lexicographically greater pair
+
             best_pair = max(max_pairs)
 
-            self.merges.append(best_pair)
+            merges.append(best_pair)
 
-            new_freq_key_b = {}
+            # Add merged token to vocab
 
-            for tokens, freq in freq_key_b.items():
-                new_tokens = self.merge_token(tokens, best_pair)
-                new_freq_key_b[new_tokens] = new_freq_key_b.get(new_tokens, 0) + freq
+            vocab[next_id] = best_pair[0] + best_pair[1]
 
-            freq_key_b = new_freq_key_b
+            next_id += 1
 
-            if num_merges is not None and len(self.merges) >= num_merges:
-                break
+            # Apply merge to all pre-token sequences
 
-        return freq_key_b
+            freq_key_b = self.merge_all(freq_key_b, best_pair)
+
+        self.vocab = vocab
+
+        self.merges = merges
 
         return vocab, merges
 
