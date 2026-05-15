@@ -4,7 +4,7 @@ from typing import BinaryIO
 from collections import Counter
 
 import regex
-
+import json
 
 def find_chunk_boundaries(
     file: BinaryIO,
@@ -106,7 +106,7 @@ def find_chunk_boundaries(
     return sorted(set(chunk_boundaries))
 
 
-class BPETokenizer:
+class BPEPreTokenization:
     """
     一个用于训练 byte-level BPE tokenizer 的简化实现。
 
@@ -649,3 +649,184 @@ class BPETokenizer:
         self.merges = merges
 
         return vocab, merges
+
+    def save(self, vocab_path: str, merges_path: str):
+
+        """
+
+        把当前 tokenizer 的 vocab 和 merges 保存到文件。
+
+        """
+
+        self.save_vocab(vocab_path)
+
+        self.save_merges(merges_path)
+
+    def save_vocab(self, vocab_path: str):
+
+        """
+        保存 vocab。
+        self.vocab:
+            {
+                97: b"a",
+                256: b"st"
+            }
+
+        保存成 JSON：
+            {
+                "97": [97],
+                "256": [115, 116]
+            }
+        """
+
+        raw_vocab = {
+            str(token_id): list(token_bytes)
+            for token_id, token_bytes in self.vocab.items()
+        }
+        with open(vocab_path, "w", encoding="utf-8") as f:
+            json.dump(raw_vocab, f, ensure_ascii=False, indent=2)
+
+    def save_merges(self, merges_path: str):
+
+        """
+        保存 merges。
+        self.merges:
+            [
+                (b"s", b"t"),
+                (b"e", b"st")
+            ]
+
+        保存成 JSON：
+            [
+                [[115], [116]],
+                [[101], [115, 116]]
+            ]
+
+        """
+
+        raw_merges = [
+            [list(left), list(right)]
+            for left, right in self.merges
+        ]
+
+        with open(merges_path, "w", encoding="utf-8") as f:
+            json.dump(raw_merges, f, ensure_ascii=False, indent=2)
+
+from collections.abc import Iterable
+
+class BPETokenizer:
+
+    def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None = None):
+        self.vocab = vocab
+        self.merges = merges
+        self.special_tokens = special_tokens
+        self.token_to_id = None
+        if special_tokens:
+            self.token_to_id = {token_bytes: token_id for token_id, token_bytes in vocab.items()}
+
+    @classmethod
+    def from_file(
+        cls,
+        vocab_path: str,
+        merges_path: str,
+        special_tokens: list[str] | None = None,
+    ):
+        """
+        从文件读取 vocab 和 merges，然后创建 BPETokenizer 实例。
+        vocab 文件格式：
+            {
+                "0": [0],
+                "1": [1],
+                "97": [97],
+                "256": [115, 116]
+            }
+
+        merges 文件格式：
+            [
+                [[115], [116]],
+                [[101], [115, 116]]
+            ]
+
+        其中：
+            [115] -> b"s"
+            [116] -> b"t"
+            [115, 116] -> b"st"
+        """
+
+        vocab = cls.load_vocab(vocab_path)
+        merges = cls.load_merges(merges_path)
+        return cls(
+            vocab=vocab,
+            merges=merges,
+            special_tokens=special_tokens,
+        )
+
+    @staticmethod
+    def load_vocab(vocab_path: str) -> dict[int, bytes]:
+        """
+        读取 vocab.json，并转换成 dict[int, bytes]。
+        文件中：
+            "256": [115, 116]
+        读取后：
+            256: b"st"
+        """
+
+        with open(vocab_path, "r", encoding="utf-8") as f:
+            raw_vocab = json.load(f)
+        vocab: dict[int, bytes] = {}
+        for token_id_str, byte_list in raw_vocab.items():
+            token_id = int(token_id_str)
+            token_bytes = bytes(byte_list)
+            vocab[token_id] = token_bytes
+        return vocab
+
+    @staticmethod
+    def load_merges(merges_path: str) -> list[tuple[bytes, bytes]]:
+        """
+        读取 merges.json，并转换成 list[tuple[bytes, bytes]]。
+        文件中：
+            [
+                [[115], [116]],
+                [[101], [115, 116]]
+            ]
+
+        读取后：
+            [
+                (b"s", b"t"),
+                (b"e", b"st")
+            ]
+        """
+
+        with open(merges_path, "r", encoding="utf-8") as f:
+            raw_merges = json.load(f)
+        merges: list[tuple[bytes, bytes]] = []
+        for left_byte_list, right_byte_list in raw_merges:
+            left = bytes(left_byte_list)
+            right = bytes(right_byte_list)
+            merges.append((left, right))
+        return merges
+
+
+    def encode(self, text: str) -> list[int]:
+        # 1 search for special tokens, and replace them with their ids
+
+        if self.special_tokens:
+            for special_token in self.special_tokens:
+                text = text.replace(
+                    special_token,
+                    str(self.token_to_id[special_token.encode("utf-8")])
+                )
+
+
+
+        pass
+
+
+    def encode_iterable(self, text_iterable: Iterable[str]) -> Iterable[list[int]]:
+        encoded_texts = []
+        for text in text_iterable:
+            encoded_texts.append(self.encode(text))
+        return encoded_texts
+
+    def decode(self, tokens: list[int]) -> str:
+        pass
