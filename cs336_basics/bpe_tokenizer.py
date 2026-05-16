@@ -466,6 +466,30 @@ class BPETrainer:
         """
         训练 byte-level BPE tokenizer。
 
+        训练 train:
+
+        文本文件
+          ↓
+        按 special token 找 chunk boundaries
+          ↓
+        每个 chunk:
+            按 special token 切开
+            regex pre-tokenize
+            pre-token 转 UTF-8 bytes
+            每个 byte 变成初始 token
+            Counter 统计 pre-token 频率
+          ↓
+        合并所有 chunk Counter
+          ↓
+        BPE merge loop:
+            统计 pair frequency
+            选最高频 pair
+            tie-break 选字典序最大
+            merge pair
+            新 token 加入 vocab
+          ↓
+        返回 vocab, merges
+
         参数：
         ----
         input_path:
@@ -1070,6 +1094,23 @@ class BPETokenizer:
     def encode(self, text: str) -> list[int]:
         """
         编码文本，包括 special tokens。
+        编码 encode:
+
+        输入 text
+          ↓
+        按 special token split，并保留 special token
+          ↓
+        普通文本:
+            regex pre-tokenize
+            UTF-8 bytes
+            初始 byte tokens
+            按 merge_ranks 应用 BPE merges
+            bytes tokens -> ids
+          ↓
+        special token:
+            直接 token -> id
+          ↓
+        返回 list[int]
 
         重要：
         ----
@@ -1149,6 +1190,18 @@ class BPETokenizer:
     def decode(self, token_ids: list[int]) -> str:
         """
         把 token ids 解码回字符串。
+
+        解码 decode:
+
+        token ids
+          ↓
+        ids -> bytes tokens
+          ↓
+        拼接所有 bytes
+          ↓
+        整体 UTF-8 decode
+          ↓
+        返回字符串
 
         输入例子：
         --------
