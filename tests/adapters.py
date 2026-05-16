@@ -594,8 +594,10 @@ def run_train_bpe(
 
     vocab, merges = pre_tokenization.train(input_path, vocab_size, special_tokens)
 
-    print(vocab)
-
-    print(merges)
+    from cs336_basics.bpe_tokenizer import BPETokenizer
+    tokenizer = BPETokenizer(vocab, merges, special_tokens)
+    chunks = tokenizer.get_chunks(input_path, 4)
+    encoded_text = tokenizer.encode_iterable(chunks)
+    print(encoded_text)
 
     return vocab, merges
